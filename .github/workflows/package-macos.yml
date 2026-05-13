@@ -30,7 +30,7 @@ jobs:
         with:
           workflow: package.yml
           workflow_conclusion: success
-          name: AzurLaneAutoScript-macOS-latest
+          name: AzurLaneAutoScript-macos-latest
           run_id: ${{ github.event.inputs.run_id || github.event.workflow_run.id }}
 
       - name: Download macOS artifact (CN)
@@ -38,7 +38,7 @@ jobs:
         with:
           workflow: package.yml
           workflow_conclusion: success
-          name: AzurLaneAutoScript-CN-macOS-latest
+          name: AzurLaneAutoScript-CN-macos-latest
           run_id: ${{ github.event.inputs.run_id || github.event.workflow_run.id }}
 
       - name: Generate DMG background image
