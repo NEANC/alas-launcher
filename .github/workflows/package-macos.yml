@@ -24,6 +24,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          echo "py-key=py-${UV_PYTHON}-$(md5 -q requirements.in)" >> $GITHUB_OUTPUT
+          echo "git-key=git-v2.49.1-dist" >> $GITHUB_OUTPUT
+          echo "adb-key=adb-platform-tools-darwin" >> $GITHUB_OUTPUT
+
+      - name: Restore Python cache
+        id: cache-python
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/python
+          key: ${{ steps.cache-keys.outputs.py-key }}
+
+      - name: Restore Git cache
+        id: cache-git
+        uses: actions/cache/restore@v4
+        with:
+          path: git
+          key: ${{ steps.cache-keys.outputs.git-key }}
+
+      - name: Restore ADB cache
+        id: cache-adb
+        uses: actions/cache/restore@v4
+        with:
+          path: platform-tools
+          key: ${{ steps.cache-keys.outputs.adb-key }}
+
       - name: Rustup for cache
         run: rustup toolchain install stable --profile minimal
 
@@ -37,6 +66,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install Python and dependencies with customized MXNet
+        if: steps.cache-python.outputs.cache-hit != 'true'
         shell: bash
         run: |
           export PYTHON_PREFIX=$(uv run python -c 'import sys; print(sys.exec_prefix)')
@@ -45,16 +75,20 @@ jobs:
           UV_PYTHON= uvx change_wheel_version mxnet-1.9.1-cp38-cp38-macosx_14_0_arm64.whl --version 1.6.99
           uv pip install --prefix "$PYTHON_PREFIX" --no-deps mxnet-1.6.99-cp38-cp38-macosx_14_0_arm64.whl
           uv pip install --prefix "$PYTHON_PREFIX" -r requirements.in
-
-      - name: Shrink python site-packages
-        shell: bash
-        run: |
           SP=$(find $PYTHON_PREFIX -name site-packages -type d)
           rm -rf $SP/Crypto/SelfTest
           find $SP/ -name tests -type d | xargs rm -rf
           find $SP/ -name '*.pyi' -type f -delete
 
+      - name: Set Python prefix (cache hit)
+        if: steps.cache-python.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          export PYTHON_PREFIX=$(uv run python -c 'import sys; print(sys.exec_prefix)')
+          echo "PYTHON_PREFIX=$PYTHON_PREFIX" >> $GITHUB_ENV
+
       - name: Get git
+        if: steps.cache-git.outputs.cache-hit != 'true'
         run: |
           brew install autoconf
           git clone https://github.com/git/git.git --branch v2.49.1 --depth 1
@@ -65,6 +99,7 @@ jobs:
           make -j$(sysctl -n hw.logicalcpu) RUNTIME_PREFIX=1 install DESTDIR=$PWD/dist
 
       - name: Get adb
+        if: steps.cache-adb.outputs.cache-hit != 'true'
         run: |
           curl -L -o adb.zip https://dl.google.com/android/repository/platform-tools-latest-darwin.zip
           unzip adb.zip
@@ -72,6 +107,27 @@ jobs:
       - name: Get ALAS
         run: |
           git clone https://github.com/LmeSzinc/AzurLaneAutoScript.git --depth=1
+
+      - name: Save Python cache
+        if: steps.cache-python.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/python
+          key: ${{ steps.cache-keys.outputs.py-key }}
+
+      - name: Save Git cache
+        if: steps.cache-git.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: git
+          key: ${{ steps.cache-keys.outputs.git-key }}
+
+      - name: Save ADB cache
+        if: steps.cache-adb.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: platform-tools
+          key: ${{ steps.cache-keys.outputs.adb-key }}
 
       - name: Distribute and package DMG
         shell: bash
@@ -141,14 +197,14 @@ jobs:
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: AzurLaneAutoScript-macOS-DMG
+          name: AzurLaneAutoScript-${{ env.PKG_VERSION }}-macOS.dmg
           path: |
             AzurLaneAutoScript-*-macOS.dmg
 
       - name: Upload DMG (CN)
         uses: actions/upload-artifact@v4
         with:
-          name: AzurLaneAutoScript-CN-macOS-DMG
+          name: AzurLaneAutoScript-CN-${{ env.PKG_VERSION }}-macOS.dmg
           path: |
             AzurLaneAutoScript-CN-*-macOS.dmg
 
