@@ -120,15 +120,14 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-          curl -fsSL https://raw.githubusercontent.com/create-dmg/create-dmg/master/create-dmg -o create-dmg
-          chmod +x create-dmg
+          brew install create-dmg
 
           build_dmg() {
             local TAR_FILE="$1"
             local SUFFIX="$2"
 
             tar -xJf "${TAR_FILE}"
-            ./create-dmg \
+            create-dmg \
               --volname "AzurLaneAutoScript" \
               --background background.png \
               --window-pos 200 120 \
