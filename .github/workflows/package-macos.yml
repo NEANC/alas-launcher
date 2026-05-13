@@ -111,7 +111,7 @@ jobs:
           img.save("background.png")
           PYEOF
 
-      - name: Create DMG (Standard)
+      - name: Create DMG
         shell: bash
         run: |
           VERSION="${{ github.event.workflow_run.head_branch || github.event.inputs.version }}"
@@ -120,40 +120,32 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
+          curl -fsSL https://raw.githubusercontent.com/create-dmg/create-dmg/master/create-dmg -o create-dmg
+          chmod +x create-dmg
+
+          build_dmg() {
+            local TAR_FILE="$1"
+            local SUFFIX="$2"
+
+            tar -xJf "${TAR_FILE}"
+            ./create-dmg \
+              --volname "AzurLaneAutoScript" \
+              --background background.png \
+              --window-pos 200 120 \
+              --window-size 640 480 \
+              --icon-size 110 \
+              --icon "AzurLaneAutoScript.app" 190 330 \
+              --app-drop-link 450 330 \
+              "AzurLaneAutoScript${SUFFIX}-${VERSION}-macOS.dmg" \
+              AzurLaneAutoScript.app
+            rm -rf AzurLaneAutoScript.app
+          }
+
           STANDARD_TAR=$(echo AzurLaneAutoScript-macOS-*.tar.xz)
-          tar -xJf "${STANDARD_TAR}"
+          build_dmg "${STANDARD_TAR}" ""
 
-          npx --yes create-dmg \
-            --volname "AzurLaneAutoScript" \
-            --background background.png \
-            --window-size 640 480 \
-            --window-pos 200 120 \
-            --icon-size 110 \
-            --icon "AzurLaneAutoScript.app" 190 330 \
-            --app-drop-link 450 330 \
-            AzurLaneAutoScript.app \
-            "AzurLaneAutoScript-${VERSION}-macOS.dmg"
-
-          rm -rf AzurLaneAutoScript.app
-
-      - name: Create DMG (CN)
-        shell: bash
-        run: |
           CN_TAR=$(echo AzurLaneAutoScript-CN-macOS-*.tar.xz)
-          tar -xJf "${CN_TAR}"
-
-          npx --yes create-dmg \
-            --volname "AzurLaneAutoScript" \
-            --background background.png \
-            --window-size 640 480 \
-            --window-pos 200 120 \
-            --icon-size 110 \
-            --icon "AzurLaneAutoScript.app" 190 330 \
-            --app-drop-link 450 330 \
-            AzurLaneAutoScript.app \
-            "AzurLaneAutoScript-CN-${VERSION}-macOS.dmg"
-
-          rm -rf AzurLaneAutoScript.app
+          build_dmg "${CN_TAR}" "-CN"
 
       - name: Upload DMG artifacts
         uses: actions/upload-artifact@v4
