@@ -1,0 +1,218 @@
+name: Package macOS DMG
+
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch: {}
+
+env:
+  UV_MANAGED_PYTHON: 1
+  UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/python
+  UV_PYTHON: 3.8.20
+
+jobs:
+  package-dmg:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Get rdfind
+        run: brew install rdfind
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          echo "py-key=py-${UV_PYTHON}-$(md5 -q requirements.in)" >> $GITHUB_OUTPUT
+          echo "git-key=git-v2.49.1-dist" >> $GITHUB_OUTPUT
+          echo "adb-key=adb-platform-tools-darwin" >> $GITHUB_OUTPUT
+
+      - name: Restore Python cache
+        id: cache-python
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/python
+          key: ${{ steps.cache-keys.outputs.py-key }}
+
+      - name: Restore Git cache
+        id: cache-git
+        uses: actions/cache/restore@v4
+        with:
+          path: git
+          key: ${{ steps.cache-keys.outputs.git-key }}
+
+      - name: Restore ADB cache
+        id: cache-adb
+        uses: actions/cache/restore@v4
+        with:
+          path: platform-tools
+          key: ${{ steps.cache-keys.outputs.adb-key }}
+
+      - name: Rustup for cache
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --verbose --release
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python and dependencies with customized MXNet
+        if: steps.cache-python.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          export PYTHON_PREFIX=$(uv run python -c 'import sys; print(sys.exec_prefix)')
+          echo "PYTHON_PREFIX=$PYTHON_PREFIX" >> $GITHUB_ENV
+          curl -L -O https://github.com/swordfeng/mxnet-build/releases/download/rev1/mxnet-1.9.1-cp38-cp38-macosx_14_0_arm64.whl
+          UV_PYTHON= uvx change_wheel_version mxnet-1.9.1-cp38-cp38-macosx_14_0_arm64.whl --version 1.6.99
+          uv pip install --prefix "$PYTHON_PREFIX" --no-deps mxnet-1.6.99-cp38-cp38-macosx_14_0_arm64.whl
+          uv pip install --prefix "$PYTHON_PREFIX" -r requirements.in
+          SP=$(find $PYTHON_PREFIX -name site-packages -type d)
+          rm -rf $SP/Crypto/SelfTest
+          find $SP/ -name tests -type d | xargs rm -rf
+          find $SP/ -name '*.pyi' -type f -delete
+
+      - name: Set Python prefix (cache hit)
+        if: steps.cache-python.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          export PYTHON_PREFIX=$(uv run python -c 'import sys; print(sys.exec_prefix)')
+          echo "PYTHON_PREFIX=$PYTHON_PREFIX" >> $GITHUB_ENV
+
+      - name: Get git
+        if: steps.cache-git.outputs.cache-hit != 'true'
+        run: |
+          brew install autoconf
+          git clone https://github.com/git/git.git --branch v2.49.1 --depth 1
+          cd git
+          echo NO_GETTEXT=1 > config.mak
+          make configure
+          ./configure --with-openssl --with-curl --with-expat --without-tcltk --prefix=/
+          make -j$(sysctl -n hw.logicalcpu) RUNTIME_PREFIX=1 install DESTDIR=$PWD/dist
+
+      - name: Get adb
+        if: steps.cache-adb.outputs.cache-hit != 'true'
+        run: |
+          curl -L -o adb.zip https://dl.google.com/android/repository/platform-tools-latest-darwin.zip
+          unzip adb.zip
+
+      - name: Get ALAS
+        run: |
+          git clone https://github.com/LmeSzinc/AzurLaneAutoScript.git --depth=1
+
+      - name: Save Python cache
+        if: steps.cache-python.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/python
+          key: ${{ steps.cache-keys.outputs.py-key }}
+
+      - name: Save Git cache
+        if: steps.cache-git.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: git
+          key: ${{ steps.cache-keys.outputs.git-key }}
+
+      - name: Save ADB cache
+        if: steps.cache-adb.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: platform-tools
+          key: ${{ steps.cache-keys.outputs.adb-key }}
+
+      - name: Distribute and package DMG
+        shell: bash
+        run: |
+          VERSION="${{ github.ref_name }}"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            VERSION="dev-$(date +%Y%m%d-%H%M%S)"
+          fi
+          echo "PKG_VERSION=$VERSION" >> $GITHUB_ENV
+
+          cd AzurLaneAutoScript
+
+          git checkout --detach origin/master
+          git branch -d master
+          git checkout --orphan master
+          git reset --hard
+          git checkout origin/master -- deploy
+          rm -rf .git
+
+          mkdir -p toolkit/bin
+          cp ../platform-tools/adb toolkit/bin/
+          mkdir -p toolkit/libexec/git-core
+          cp -a ../git/dist/libexec/git-core/{git,git-remote-http,git-remote-https} toolkit/libexec/git-core/
+          ln toolkit/libexec/git-core/git toolkit/bin/
+          cp -r $PYTHON_PREFIX/* toolkit/
+          mkdir -p config
+          cp ../deploy.unix.yaml config/deploy.yaml
+
+          cd ${{ github.workspace }}
+
+          build_dmg() {
+            local ALAS_DIR="$1"
+            local DEPLOY_YAML="$2"
+            local SUFFIX="$3"
+
+            cp "${DEPLOY_YAML}" "${ALAS_DIR}"/config/deploy.yaml
+
+            mkdir -p AzurLaneAutoScript.app/Contents/MacOS
+            cp target/release/alas-launcher AzurLaneAutoScript.app/Contents/MacOS/
+            mkdir -p AzurLaneAutoScript.app/Contents/Resources
+            cp icons/icon.icns AzurLaneAutoScript.app/Contents/Resources/
+            cp -r "${ALAS_DIR}" AzurLaneAutoScript.app/Contents/
+            cp Info.plist AzurLaneAutoScript.app/Contents/
+            rdfind -minsize 128 -makehardlinks true AzurLaneAutoScript.app
+
+            pkgbuild --component AzurLaneAutoScript.app \
+              --install-location /Applications \
+              --identifier moe.taiho.alas-launcher \
+              --version "${VERSION}" \
+              --ownership recommended \
+              "AzurLaneAutoScript${SUFFIX}-${VERSION}.pkg"
+
+            rm -rf AzurLaneAutoScript.app
+
+            mkdir -p dmg_staging
+            cp "AzurLaneAutoScript${SUFFIX}-${VERSION}.pkg" dmg_staging/
+            hdiutil create -volname "AzurLaneAutoScript" \
+              -srcfolder dmg_staging \
+              -ov -format UDZO \
+              "AzurLaneAutoScript${SUFFIX}-${VERSION}-macOS.dmg"
+            rm -rf dmg_staging
+          }
+
+          build_dmg "AzurLaneAutoScript" "deploy.unix.yaml" ""
+          build_dmg "AzurLaneAutoScript" "deploy.unix-cn.yaml" "-CN"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: AzurLaneAutoScript-${{ env.PKG_VERSION }}-macOS.dmg
+          path: |
+            AzurLaneAutoScript-*-macOS.dmg
+
+      - name: Upload DMG (CN)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AzurLaneAutoScript-CN-${{ env.PKG_VERSION }}-macOS.dmg
+          path: |
+            AzurLaneAutoScript-CN-*-macOS.dmg
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
+        with:
+          prerelease: true
+          files: |
+            AzurLaneAutoScript-*-macOS.dmg
+            AzurLaneAutoScript-CN-*-macOS.dmg
