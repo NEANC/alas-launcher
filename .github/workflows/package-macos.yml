@@ -121,7 +121,7 @@ jobs:
               --install-location /Applications \
               --identifier moe.taiho.alas-launcher \
               --version "${VERSION}" \
-              --ownership recommend \
+              --ownership recommended \
               "AzurLaneAutoScript${SUFFIX}-${VERSION}.pkg"
 
             rm -rf AzurLaneAutoScript.app
