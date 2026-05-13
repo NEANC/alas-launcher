@@ -1,218 +1,171 @@
 name: Package macOS DMG
 
 on:
-  push:
-    tags:
-      - '*'
-  workflow_dispatch: {}
-
-env:
-  UV_MANAGED_PYTHON: 1
-  UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/python
-  UV_PYTHON: 3.8.20
+  workflow_run:
+    workflows: ["Pack alas-launcher"]
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run ID of "Pack alas-launcher" (leave empty for latest successful run)'
+        required: false
+        type: string
+      version:
+        description: 'Version string (leave empty for dev timestamp)'
+        required: false
+        type: string
 
 jobs:
   package-dmg:
     runs-on: macos-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: write
+      actions: read
 
     steps:
-      - name: Get rdfind
-        run: brew install rdfind
+      - name: Download macOS artifact (Standard)
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: package.yml
+          workflow_conclusion: success
+          name: AzurLaneAutoScript-macOS-latest
+          run_id: ${{ github.event.inputs.run_id || github.event.workflow_run.id }}
 
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Download macOS artifact (CN)
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: package.yml
+          workflow_conclusion: success
+          name: AzurLaneAutoScript-CN-macOS-latest
+          run_id: ${{ github.event.inputs.run_id || github.event.workflow_run.id }}
 
-      - name: Compute cache keys
-        id: cache-keys
+      - name: Generate DMG background image
         shell: bash
         run: |
-          echo "py-key=py-${UV_PYTHON}-$(md5 -q requirements.in)" >> $GITHUB_OUTPUT
-          echo "git-key=git-v2.49.1-dist" >> $GITHUB_OUTPUT
-          echo "adb-key=adb-platform-tools-darwin" >> $GITHUB_OUTPUT
+          pip3 install Pillow
+          python3 - <<'PYEOF'
+          from PIL import Image, ImageDraw, ImageFont
+          import os
 
-      - name: Restore Python cache
-        id: cache-python
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ github.workspace }}/python
-          key: ${{ steps.cache-keys.outputs.py-key }}
+          W, H = 640, 480
+          img = Image.new("RGB", (W, H), color=(245, 245, 245))
+          draw = ImageDraw.Draw(img)
 
-      - name: Restore Git cache
-        id: cache-git
-        uses: actions/cache/restore@v4
-        with:
-          path: git
-          key: ${{ steps.cache-keys.outputs.git-key }}
+          font_dir = "/System/Library/Fonts"
+          try:
+              font_title = ImageFont.truetype(
+                  os.path.join(font_dir, "Helvetica.ttc"), 20
+              )
+              font_body = ImageFont.truetype(
+                  os.path.join(font_dir, "Helvetica.ttc"), 15
+              )
+              font_cmd = ImageFont.truetype(
+                  os.path.join(font_dir, "Menlo.ttc"), 13
+              )
+          except Exception:
+              font_title = font_body = font_cmd = ImageFont.load_default()
 
-      - name: Restore ADB cache
-        id: cache-adb
-        uses: actions/cache/restore@v4
-        with:
-          path: platform-tools
-          key: ${{ steps.cache-keys.outputs.adb-key }}
+          TEXT_COLOR = (60, 60, 60)
+          CMD_COLOR = (200, 50, 50)
+          HINT_COLOR = (120, 80, 80)
 
-      - name: Rustup for cache
-        run: rustup toolchain install stable --profile minimal
+          lines = [
+              ("\u21e9  将 AzurLaneAutoScript.app", font_title, TEXT_COLOR),
+              ("      拖入 Applications 文件夹", font_title, TEXT_COLOR),
+              ("", font_body, TEXT_COLOR),
+              ("\u26a0\ufe0f  首次启动前，请在终端执行：", font_body, TEXT_COLOR),
+              (
+                  "   xattr -dr com.apple.quarantine \\",
+                  font_cmd,
+                  CMD_COLOR,
+              ),
+              (
+                  "     /Applications/AzurLaneAutoScript.app",
+                  font_cmd,
+                  CMD_COLOR,
+              ),
+              ("", font_body, TEXT_COLOR),
+              (
+                  "   \u2776  Install: drag the app to Applications",
+                  font_body,
+                  TEXT_COLOR,
+              ),
+              (
+                  "   \u2777  Before first launch: run the command above in Terminal",
+                  font_body,
+                  HINT_COLOR,
+              ),
+          ]
 
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+          y = 120
+          for text, font, color in lines:
+              if text:
+                  bbox = draw.textbbox((0, 0), text, font=font)
+                  draw.text((50, y), text, fill=color, font=font)
+                  y += bbox[3] - bbox[1] + 6
+              else:
+                  y += 10
 
-      - name: Build
-        run: cargo build --verbose --release
+          img.save("background.png")
+          PYEOF
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Install Python and dependencies with customized MXNet
-        if: steps.cache-python.outputs.cache-hit != 'true'
+      - name: Create DMG (Standard)
         shell: bash
         run: |
-          export PYTHON_PREFIX=$(uv run python -c 'import sys; print(sys.exec_prefix)')
-          echo "PYTHON_PREFIX=$PYTHON_PREFIX" >> $GITHUB_ENV
-          curl -L -O https://github.com/swordfeng/mxnet-build/releases/download/rev1/mxnet-1.9.1-cp38-cp38-macosx_14_0_arm64.whl
-          UV_PYTHON= uvx change_wheel_version mxnet-1.9.1-cp38-cp38-macosx_14_0_arm64.whl --version 1.6.99
-          uv pip install --prefix "$PYTHON_PREFIX" --no-deps mxnet-1.6.99-cp38-cp38-macosx_14_0_arm64.whl
-          uv pip install --prefix "$PYTHON_PREFIX" -r requirements.in
-          SP=$(find $PYTHON_PREFIX -name site-packages -type d)
-          rm -rf $SP/Crypto/SelfTest
-          find $SP/ -name tests -type d | xargs rm -rf
-          find $SP/ -name '*.pyi' -type f -delete
-
-      - name: Set Python prefix (cache hit)
-        if: steps.cache-python.outputs.cache-hit == 'true'
-        shell: bash
-        run: |
-          export PYTHON_PREFIX=$(uv run python -c 'import sys; print(sys.exec_prefix)')
-          echo "PYTHON_PREFIX=$PYTHON_PREFIX" >> $GITHUB_ENV
-
-      - name: Get git
-        if: steps.cache-git.outputs.cache-hit != 'true'
-        run: |
-          brew install autoconf
-          git clone https://github.com/git/git.git --branch v2.49.1 --depth 1
-          cd git
-          echo NO_GETTEXT=1 > config.mak
-          make configure
-          ./configure --with-openssl --with-curl --with-expat --without-tcltk --prefix=/
-          make -j$(sysctl -n hw.logicalcpu) RUNTIME_PREFIX=1 install DESTDIR=$PWD/dist
-
-      - name: Get adb
-        if: steps.cache-adb.outputs.cache-hit != 'true'
-        run: |
-          curl -L -o adb.zip https://dl.google.com/android/repository/platform-tools-latest-darwin.zip
-          unzip adb.zip
-
-      - name: Get ALAS
-        run: |
-          git clone https://github.com/LmeSzinc/AzurLaneAutoScript.git --depth=1
-
-      - name: Save Python cache
-        if: steps.cache-python.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ github.workspace }}/python
-          key: ${{ steps.cache-keys.outputs.py-key }}
-
-      - name: Save Git cache
-        if: steps.cache-git.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: git
-          key: ${{ steps.cache-keys.outputs.git-key }}
-
-      - name: Save ADB cache
-        if: steps.cache-adb.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: platform-tools
-          key: ${{ steps.cache-keys.outputs.adb-key }}
-
-      - name: Distribute and package DMG
-        shell: bash
-        run: |
-          VERSION="${{ github.ref_name }}"
+          VERSION="${{ github.event.workflow_run.head_branch || github.event.inputs.version }}"
           if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
             VERSION="dev-$(date +%Y%m%d-%H%M%S)"
           fi
-          echo "PKG_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-          cd AzurLaneAutoScript
+          STANDARD_TAR=$(echo AzurLaneAutoScript-macOS-*.tar.xz)
+          tar -xJf "${STANDARD_TAR}"
 
-          git checkout --detach origin/master
-          git branch -d master
-          git checkout --orphan master
-          git reset --hard
-          git checkout origin/master -- deploy
-          rm -rf .git
+          npx --yes create-dmg \
+            --volname "AzurLaneAutoScript" \
+            --background background.png \
+            --window-size 640 480 \
+            --window-pos 200 120 \
+            --icon-size 110 \
+            --icon "AzurLaneAutoScript.app" 190 330 \
+            --app-drop-link 450 330 \
+            AzurLaneAutoScript.app \
+            "AzurLaneAutoScript-${VERSION}-macOS.dmg"
 
-          mkdir -p toolkit/bin
-          cp ../platform-tools/adb toolkit/bin/
-          mkdir -p toolkit/libexec/git-core
-          cp -a ../git/dist/libexec/git-core/{git,git-remote-http,git-remote-https} toolkit/libexec/git-core/
-          ln toolkit/libexec/git-core/git toolkit/bin/
-          cp -r $PYTHON_PREFIX/* toolkit/
-          mkdir -p config
-          cp ../deploy.unix.yaml config/deploy.yaml
+          rm -rf AzurLaneAutoScript.app
 
-          cd ${{ github.workspace }}
+      - name: Create DMG (CN)
+        shell: bash
+        run: |
+          CN_TAR=$(echo AzurLaneAutoScript-CN-macOS-*.tar.xz)
+          tar -xJf "${CN_TAR}"
 
-          build_dmg() {
-            local ALAS_DIR="$1"
-            local DEPLOY_YAML="$2"
-            local SUFFIX="$3"
+          npx --yes create-dmg \
+            --volname "AzurLaneAutoScript" \
+            --background background.png \
+            --window-size 640 480 \
+            --window-pos 200 120 \
+            --icon-size 110 \
+            --icon "AzurLaneAutoScript.app" 190 330 \
+            --app-drop-link 450 330 \
+            AzurLaneAutoScript.app \
+            "AzurLaneAutoScript-CN-${VERSION}-macOS.dmg"
 
-            cp "${DEPLOY_YAML}" "${ALAS_DIR}"/config/deploy.yaml
+          rm -rf AzurLaneAutoScript.app
 
-            mkdir -p AzurLaneAutoScript.app/Contents/MacOS
-            cp target/release/alas-launcher AzurLaneAutoScript.app/Contents/MacOS/
-            mkdir -p AzurLaneAutoScript.app/Contents/Resources
-            cp icons/icon.icns AzurLaneAutoScript.app/Contents/Resources/
-            cp -r "${ALAS_DIR}" AzurLaneAutoScript.app/Contents/
-            cp Info.plist AzurLaneAutoScript.app/Contents/
-            rdfind -minsize 128 -makehardlinks true AzurLaneAutoScript.app
-
-            pkgbuild --component AzurLaneAutoScript.app \
-              --install-location /Applications \
-              --identifier moe.taiho.alas-launcher \
-              --version "${VERSION}" \
-              --ownership recommended \
-              "AzurLaneAutoScript${SUFFIX}-${VERSION}.pkg"
-
-            rm -rf AzurLaneAutoScript.app
-
-            mkdir -p dmg_staging
-            cp "AzurLaneAutoScript${SUFFIX}-${VERSION}.pkg" dmg_staging/
-            hdiutil create -volname "AzurLaneAutoScript" \
-              -srcfolder dmg_staging \
-              -ov -format UDZO \
-              "AzurLaneAutoScript${SUFFIX}-${VERSION}-macOS.dmg"
-            rm -rf dmg_staging
-          }
-
-          build_dmg "AzurLaneAutoScript" "deploy.unix.yaml" ""
-          build_dmg "AzurLaneAutoScript" "deploy.unix-cn.yaml" "-CN"
-
-      - name: Upload DMG
+      - name: Upload DMG artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: AzurLaneAutoScript-${{ env.PKG_VERSION }}-macOS.dmg
+          name: AzurLaneAutoScript-${{ env.VERSION }}-macOS-DMG
           path: |
             AzurLaneAutoScript-*-macOS.dmg
 
-      - name: Upload DMG (CN)
-        uses: actions/upload-artifact@v4
-        with:
-          name: AzurLaneAutoScript-CN-${{ env.PKG_VERSION }}-macOS.dmg
-          path: |
-            AzurLaneAutoScript-CN-*-macOS.dmg
-
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        if: github.ref_type == 'tag'
-        with:
-          prerelease: true
-          files: |
-            AzurLaneAutoScript-*-macOS.dmg
-            AzurLaneAutoScript-CN-*-macOS.dmg
+      - name: Upload to Release
+        if: ${{ env.VERSION != '' && !startsWith(env.VERSION, 'dev-') }}
+        shell: bash
+        run: |
+          gh release upload "${{ env.VERSION }}" AzurLaneAutoScript-*-macOS.dmg --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
