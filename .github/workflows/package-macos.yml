@@ -146,12 +146,17 @@ jobs:
           CN_TAR=$(echo AzurLaneAutoScript-CN-macOS-*.tar.xz)
           build_dmg "${CN_TAR}" "-CN"
 
-      - name: Upload DMG artifacts
+      - name: Upload DMG (Standard)
         uses: actions/upload-artifact@v4
         with:
-          name: AzurLaneAutoScript-${{ env.VERSION }}-macOS-DMG
-          path: |
-            AzurLaneAutoScript-*-macOS.dmg
+          name: AzurLaneAutoScript-${{ env.VERSION }}-macOS.dmg
+          path: AzurLaneAutoScript-${{ env.VERSION }}-macOS.dmg
+
+      - name: Upload DMG (CN)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AzurLaneAutoScript-CN-${{ env.VERSION }}-macOS.dmg
+          path: AzurLaneAutoScript-CN-${{ env.VERSION }}-macOS.dmg
 
       - name: Upload to Release
         if: ${{ env.VERSION != '' && !startsWith(env.VERSION, 'dev-') }}
